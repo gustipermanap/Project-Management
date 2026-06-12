@@ -73,6 +73,25 @@ async def test_full_application_flow():
         assert task["title"] == "Fitur Checkout Pembayaran"
         assert len(task["component_statuses"]) == 2
 
+        # 7.1 PM membuat Task kedua yang bergantung pada Task pertama
+        print("Menguji pembuatan task kedua dengan dependensi oleh PM...")
+        task_dep_payload = {
+            "title": "Kupon Diskon Checkout",
+            "description": "Menambahkan sistem kupon diskon untuk checkout",
+            "due_date": "2026-07-10",
+            "project_id": project_id,
+            "macro_status_id": backlog_status_id,
+            "components": [fe_id],
+            "dependencies": [task_id]
+        }
+        response = await client.post("/api/v1/tasks/", json=task_dep_payload, headers=pm_headers)
+        assert response.status_code == 201, f"Pembuatan task dengan dependensi gagal: {response.text}"
+        task_dep = response.json()
+        assert task_dep["title"] == "Kupon Diskon Checkout"
+        assert len(task_dep["dependencies"]) == 1
+        assert task_dep["dependencies"][0]["id"] == task_id
+        print("-> Pembuatan task kedua dengan dependensi berhasil [OK]")
+
         # 8. Dev1 mengupdate status Frontend ke UI Ready
         print("Menguji update status komponen Frontend ke 'UI Ready' oleh Developer...")
         response = await client.put(

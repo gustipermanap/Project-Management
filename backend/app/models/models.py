@@ -1,7 +1,7 @@
 import json
 from datetime import date, datetime
 from typing import List, Optional
-from sqlalchemy import Boolean, ForeignKey, String, Text, Date, Float, DateTime, func
+from sqlalchemy import Boolean, ForeignKey, String, Text, Date, Float, DateTime, func, Table, Column, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 from app.core.permissions import ALL_PERMISSION_KEYS
@@ -92,6 +92,14 @@ class Component(Base):
     conditions: Mapped[List["RuleCondition"]] = relationship(back_populates="component", cascade="all, delete-orphan")
 
 
+task_dependency_association = Table(
+    "task_dependencies",
+    Base.metadata,
+    Column("task_id", Integer, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+    Column("dependency_id", Integer, ForeignKey("tasks.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -106,6 +114,15 @@ class Task(Base):
     macro_status: Mapped["Status"] = relationship()
     component_statuses: Mapped[List["TaskComponentStatus"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     audit_trails: Mapped[List["AuditTrail"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    
+    dependencies: Mapped[List["Task"]] = relationship(
+        "Task",
+        secondary=task_dependency_association,
+        primaryjoin="Task.id==task_dependencies.c.task_id",
+        secondaryjoin="Task.id==task_dependencies.c.dependency_id",
+        backref="blocked_tasks",
+        lazy="selectin"
+    )
 
 
 class TaskComponentStatus(Base):

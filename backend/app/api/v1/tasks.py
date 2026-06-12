@@ -35,6 +35,7 @@ async def get_tasks(
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
         )
     )
     if project_id:
@@ -58,6 +59,7 @@ async def get_task(
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
         )
     )
     res = await db.execute(stmt)
@@ -98,10 +100,34 @@ async def create_task(
         description=task_in.description,
         macro_status_id=task_in.macro_status_id,
         due_date=task_in.due_date,
-        project_id=task_in.project_id
+        project_id=task_in.project_id,
+        dependencies=[]
     )
     db.add(task)
     await db.flush()
+
+    # 3.5 Cek dan tambah dependensi task (memastikan tidak terjadi circular dependency dan berada di project yang sama)
+    if task_in.dependencies:
+        for dep_id in task_in.dependencies:
+            if dep_id == task.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task tidak dapat bergantung pada dirinya sendiri."
+                )
+            
+            dep_task = await db.get(Task, dep_id)
+            if not dep_task:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Task dependensi dengan ID {dep_id} tidak ditemukan"
+                )
+            if dep_task.project_id != task_in.project_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Task dependensi dengan ID {dep_id} harus berada pada proyek yang sama ({task_in.project_id})"
+                )
+            task.dependencies.append(dep_task)
+        await db.flush()
 
     # 4. Cari status default untuk komponen (sama dengan macro_status atau default "Backlog")
     default_status_stmt = select(Status).where(Status.name == "Backlog")
@@ -147,6 +173,7 @@ async def create_task(
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
         )
     )
     res = await db.execute(stmt)
@@ -295,6 +322,7 @@ async def update_macro_status(
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
         )
     )
     res_reload = await db.execute(stmt_reload)
@@ -380,6 +408,7 @@ async def reject_task_by_qa(
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
             selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
         )
     )
     res_reload = await db.execute(stmt_reload)

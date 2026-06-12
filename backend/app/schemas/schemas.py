@@ -231,21 +231,29 @@ class TaskBase(BaseModel):
     due_date: Optional[date] = None
     project_id: int
 
+class TaskDependencyRead(BaseModel):
+    id: int
+    title: str
+    model_config = ConfigDict(from_attributes=True)
+
 class TaskCreate(TaskBase):
     macro_status_id: int
     components: List[int] = Field(..., description="Daftar ID komponen yang terlibat")
+    dependencies: List[int] = Field(default_factory=list, description="Daftar ID task yang menjadi dependensi")
 
 class TaskUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
     macro_status_id: Optional[int] = None
     due_date: Optional[date] = None
+    dependencies: Optional[List[int]] = Field(None, description="Daftar ID task yang menjadi dependensi")
 
 class TaskRead(TaskBase):
     id: int
     macro_status_id: int
     macro_status: Optional[StatusRead] = None
     component_statuses: List[TaskComponentStatusRead] = []
+    dependencies: List[TaskDependencyRead] = []
     model_config = ConfigDict(from_attributes=True)
 
 

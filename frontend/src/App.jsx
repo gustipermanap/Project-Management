@@ -72,6 +72,7 @@ function App() {
   const [taskDesc, setTaskDesc] = useState('');
   const [taskDueDate, setTaskDueDate] = useState('');
   const [taskComponents, setTaskComponents] = useState([]);
+  const [selectedTaskDependencies, setSelectedTaskDependencies] = useState([]);
 
   // Reject Modal Form State
   const [selectedTaskForReject, setSelectedTaskForReject] = useState(null);
@@ -322,7 +323,8 @@ function App() {
           due_date: taskDueDate || null,
           project_id: activeProject.id,
           macro_status_id: backlogStatus.id,
-          components: taskComponents
+          components: taskComponents,
+          dependencies: selectedTaskDependencies
         })
       });
 
@@ -332,6 +334,7 @@ function App() {
         setTaskDesc('');
         setTaskDueDate('');
         setTaskComponents([]);
+        setSelectedTaskDependencies([]);
         fetchBoardData();
       } else {
         const error = await res.json();
@@ -787,6 +790,14 @@ function App() {
     }
   };
 
+  const toggleTaskDependencySelection = (id) => {
+    if (selectedTaskDependencies.includes(id)) {
+      setSelectedTaskDependencies(selectedTaskDependencies.filter(depId => depId !== id));
+    } else {
+      setSelectedTaskDependencies([...selectedTaskDependencies, id]);
+    }
+  };
+
   const toggleBuggyComponentSelection = (id) => {
     if (buggyComponents.includes(id)) {
       setBuggyComponents(buggyComponents.filter(c => c !== id));
@@ -1122,6 +1133,28 @@ function App() {
                             </p>
                           )}
 
+                          {task.dependencies && task.dependencies.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {task.dependencies.map(dep => {
+                                const depTaskOnBoard = tasks.find(t => t.id === dep.id);
+                                const isDone = depTaskOnBoard?.macro_status?.category === 'Done';
+                                return (
+                                  <span 
+                                    key={dep.id} 
+                                    className={`text-[8px] font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 font-mono ${
+                                      isDone 
+                                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                    }`}
+                                    title={dep.title}
+                                  >
+                                    🔗 #{dep.id} {isDone ? '✓' : '⚠️'}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+
                           {/* Technical components status board inside card */}
                           <div className="space-y-2.5 border-t border-slate-800/80 pt-3">
                             <p className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Komponen Teknis:</p>
@@ -1359,6 +1392,30 @@ function App() {
                   <p className="text-xs font-bold text-indigo-400">{activeAuditTask.title}</p>
                 </div>
 
+                {activeAuditTask.dependencies && activeAuditTask.dependencies.length > 0 && (
+                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-850 space-y-2">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Dependensi Task:</p>
+                    <div className="space-y-1.5">
+                      {activeAuditTask.dependencies.map(dep => {
+                        const depTaskOnBoard = tasks.find(t => t.id === dep.id);
+                        const isDone = depTaskOnBoard?.macro_status?.category === 'Done';
+                        return (
+                          <div key={dep.id} className="flex items-center justify-between text-[10px] leading-relaxed">
+                            <span className="text-slate-300 truncate mr-2" title={dep.title}>
+                              🔗 #{dep.id} - {dep.title}
+                            </span>
+                            <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded font-mono ${
+                              isDone ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            }`}>
+                              {isDone ? 'Selesai' : 'Belum Selesai'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-4 max-h-[400px] overflow-y-auto pr-1">
                   {auditLogs.length === 0 ? (
                     <p className="text-slate-500 italic text-xs py-4 text-center">Belum ada aktivitas tercatat.</p>
@@ -1460,6 +1517,31 @@ function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-slate-300 font-semibold">Ketergantungan Task (Dependensi)</label>
+                {tasks.length === 0 ? (
+                  <p className="text-slate-500 italic text-[11px]">Belum ada task lain di proyek ini yang dapat dijadikan dependensi.</p>
+                ) : (
+                  <div className="max-h-[120px] overflow-y-auto space-y-1.5 border border-slate-800 p-2.5 rounded-lg bg-slate-950/40">
+                    {tasks.map(t => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => toggleTaskDependencySelection(t.id)}
+                        className={`w-full py-1.5 px-3 rounded-md border text-left flex items-center justify-between transition-colors cursor-pointer text-[11px] ${
+                          selectedTaskDependencies.includes(t.id)
+                            ? 'bg-indigo-600/10 border-indigo-500 text-indigo-400'
+                            : 'bg-slate-900/50 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="truncate">#{t.id} - {t.title}</span>
+                        {selectedTaskDependencies.includes(t.id) && <Check className="w-3.5 h-3.5 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
