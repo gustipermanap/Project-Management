@@ -1,0 +1,11 @@
+aiosqlite==0.21.0
+email-validator==2.3.0
+fastapi==0.124.4
+fastcrud==0.19.0
+httpx==0.28.1
+passlib==1.7.4
+pydantic-settings==2.12.0
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.21
+sqlalchemy==2.0.45
+uvicorn[standard]==0.38.0

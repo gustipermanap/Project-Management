@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: management-project-be
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:///./data/management_project.db
+      JWT_SECRET_KEY: change_this_secret_in_production
+    ports:
+      - "8291:8291"
+    volumes:
+      - backend_sqlite_data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: management-project-fe
+    depends_on:
+      - backend
+    ports:
+      - "3333:3333"
+    restart: unless-stopped
+
+volumes:
+  backend_sqlite_data:
