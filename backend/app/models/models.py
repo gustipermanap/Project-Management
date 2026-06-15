@@ -57,6 +57,9 @@ class User(Base):
             return ALL_PERMISSION_KEYS
         if self.group:
             return self.group.permissions
+        from app.core.permissions import DEFAULT_GROUPS
+        if self.role in DEFAULT_GROUPS:
+            return DEFAULT_GROUPS[self.role]["permissions"]
         return []
 
 

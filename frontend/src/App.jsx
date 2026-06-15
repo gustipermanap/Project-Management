@@ -4,7 +4,7 @@ import {
   User as UserIcon, Shield, Layers, HelpCircle, 
   Trash2, PlusCircle, ArrowRight, Clock, History,
   LogOut, Lock, LogIn, ChevronDown, Check, AlertTriangle,
-  Settings, FolderKanban, Pencil, X
+  Settings, FolderKanban, Pencil, X, Search, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8291`;
@@ -38,6 +38,27 @@ function App() {
   const [selectedProjectForEdit, setSelectedProjectForEdit] = useState(null);
   const [showStatusManagement, setShowStatusManagement] = useState(false);
   const [showStatusForm, setShowStatusForm] = useState(false);
+
+  // Filter & Search State
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterAssignee, setFilterAssignee] = useState('');
+  const [filterComponent, setFilterComponent] = useState('');
+
+  // Kanban Column Collapse State
+  const [collapsedColumns, setCollapsedColumns] = useState({
+    Backlog: false,
+    In_Progress: false,
+    Review: false,
+    Done: false
+  });
+
+  // Edit Task State
+  const [showEditTask, setShowEditTask] = useState(false);
+  const [selectedTaskForEdit, setSelectedTaskForEdit] = useState(null);
+  const [editTaskTitle, setEditTaskTitle] = useState('');
+  const [editTaskDesc, setEditTaskDesc] = useState('');
+  const [editTaskDueDate, setEditTaskDueDate] = useState('');
+  const [editTaskDependencies, setEditTaskDependencies] = useState([]);
   const [selectedStatusForEdit, setSelectedStatusForEdit] = useState(null);
   const [showGroupManagement, setShowGroupManagement] = useState(false);
   const [showGroupForm, setShowGroupForm] = useState(false);
@@ -91,6 +112,118 @@ function App() {
   const hasPermission = (permission) => (
     currentUser?.role === 'Supadmin' || currentUser?.permissions?.includes(permission)
   );
+
+  const toggleCollapseColumn = (category) => {
+    setCollapsedColumns(prev => ({
+      ...prev,
+      [category]: !prev[category]
+    }));
+  };
+
+  const handleDragStart = (e, task) => {
+    e.dataTransfer.setData("text/plain", task.id.toString());
+  };
+
+  const handleDrop = async (e, category) => {
+    e.preventDefault();
+    const taskIdStr = e.dataTransfer.getData("text/plain");
+    const taskId = parseInt(taskIdStr);
+    if (!taskId) return;
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    if (task.macro_status?.category === category) return;
+
+    if (!hasPermission('manage_tasks') && !hasPermission('qa_gate')) {
+      alert("Anda tidak memiliki akses untuk mengubah status makro task!");
+      return;
+    }
+
+    const targetStatus = statuses.find(s => s.category === category);
+    if (!targetStatus) {
+      alert(`Status untuk kategori ${category} tidak ditemukan!`);
+      return;
+    }
+
+    if (hasPermission('qa_gate') && !hasPermission('manage_tasks')) {
+      if (category === 'Done') {
+        handleQAOverrideMacro(taskId, targetStatus.id);
+      } else if (category === 'In_Progress') {
+        setSelectedTaskForReject(task);
+        setBuggyComponents([]);
+        setRejectReason('');
+        setShowRejectModal(true);
+      } else {
+        alert("QA hanya diperbolehkan menyetujui ke 'Done' atau menolak ke 'In Progress'!");
+      }
+      return;
+    }
+
+    handleQAOverrideMacro(taskId, targetStatus.id);
+  };
+
+  const openTaskEditor = (task) => {
+    if (!hasPermission('manage_tasks')) {
+      alert("Anda tidak memiliki izin untuk mengedit detail task.");
+      return;
+    }
+    setSelectedTaskForEdit(task);
+    setEditTaskTitle(task.title || '');
+    setEditTaskDesc(task.description || '');
+    setEditTaskDueDate(task.due_date || '');
+    setEditTaskDependencies(task.dependencies ? task.dependencies.map(d => d.id) : []);
+    setShowEditTask(true);
+  };
+
+  const toggleEditTaskDependencySelection = (id) => {
+    if (editTaskDependencies.includes(id)) {
+      setEditTaskDependencies(editTaskDependencies.filter(depId => depId !== id));
+    } else {
+      setEditTaskDependencies([...editTaskDependencies, id]);
+    }
+  };
+
+  const handleUpdateTask = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${API_URL}/api/v1/tasks/${selectedTaskForEdit.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          title: editTaskTitle,
+          description: editTaskDesc,
+          due_date: editTaskDueDate || null,
+          dependencies: editTaskDependencies
+        })
+      });
+      if (res.ok) {
+        setShowEditTask(false);
+        setSelectedTaskForEdit(null);
+        fetchBoardData();
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const isSubTaskOfActiveParent = (task) => {
+    if (!task.dependencies || task.dependencies.length === 0) return false;
+    return task.dependencies.some(dep => {
+      const parent = tasks.find(t => t.id === dep.id);
+      return parent && parent.macro_status?.category === 'In_Progress';
+    });
+  };
+
+  const getSubTasksForParent = (parentTask) => {
+    if (parentTask.macro_status?.category !== 'In_Progress') return [];
+    return tasks.filter(t => t.dependencies && t.dependencies.some(dep => dep.id === parentTask.id));
+  };
 
   const getSelectedGroupName = (groupId) => {
     const selectedGroup = groups.find(group => group.id === parseInt(groupId));
@@ -806,6 +939,26 @@ function App() {
     }
   };
 
+  const filteredTasks = tasks.filter(task => {
+    if (filterSearch) {
+      const q = filterSearch.toLowerCase();
+      const matchTitle = task.title?.toLowerCase().includes(q);
+      const matchDesc = task.description?.toLowerCase().includes(q);
+      if (!matchTitle && !matchDesc) return false;
+    }
+    if (filterAssignee) {
+      const assigneeId = parseInt(filterAssignee);
+      const hasAssignee = task.component_statuses?.some(cs => cs.assignee_id === assigneeId);
+      if (!hasAssignee) return false;
+    }
+    if (filterComponent) {
+      const compId = parseInt(filterComponent);
+      const hasComponent = task.component_statuses?.some(cs => cs.component_id === compId);
+      if (!hasComponent) return false;
+    }
+    return true;
+  });
+
   // Login view if unauthenticated
   if (!token) {
     return (
@@ -862,32 +1015,6 @@ function App() {
               <span>Masuk Sistem</span>
             </button>
           </form>
-
-          <div className="border-t border-slate-800/80 my-6 pt-6">
-            <p className="text-slate-400 text-xs text-center font-medium mb-3">Quick Login (Testing Mode):</p>
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => { setLoginUsername('supadmin'); setLoginPassword('password123'); setTimeout(() => handleLogin(), 100); }} className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs py-2 px-3 border border-slate-800/80 rounded-lg font-medium text-left flex items-center justify-between">
-                <span>Supadmin</span>
-                <span className="text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded font-mono">ALL</span>
-              </button>
-              <button onClick={() => { setLoginUsername('pm'); setLoginPassword('password123'); setTimeout(() => handleLogin(), 100); }} className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs py-2 px-3 border border-slate-800/80 rounded-lg font-medium text-left flex items-center justify-between">
-                <span>Project Manager</span>
-                <span className="text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded font-mono">PM</span>
-              </button>
-              <button onClick={() => { setLoginUsername('developer1'); setLoginPassword('password123'); setTimeout(() => handleLogin(), 100); }} className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs py-2 px-3 border border-slate-800/80 rounded-lg font-medium text-left flex items-center justify-between">
-                <span>Developer 1</span>
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono">Dev</span>
-              </button>
-              <button onClick={() => { setLoginUsername('developer2'); setLoginPassword('password123'); setTimeout(() => handleLogin(), 100); }} className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs py-2 px-3 border border-slate-800/80 rounded-lg font-medium text-left flex items-center justify-between">
-                <span>Developer 2</span>
-                <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono">Dev</span>
-              </button>
-              <button onClick={() => { setLoginUsername('qa'); setLoginPassword('password123'); setTimeout(() => handleLogin(), 100); }} className="bg-slate-950 hover:bg-slate-850 text-slate-300 text-xs py-2 px-3 border border-slate-800/80 rounded-lg font-medium text-left flex items-center justify-between">
-                <span>QA Engineer</span>
-                <span className="text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded font-mono">QA</span>
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     );
@@ -993,7 +1120,7 @@ function App() {
                 }}
               >
                 {projects.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
+                  <option className="bg-slate-900 text-slate-200" key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
               <ChevronDown className="absolute right-3.5 top-3 w-4 h-4 text-slate-400 pointer-events-none" />
@@ -1079,6 +1206,59 @@ function App() {
         </div>
       </section>
 
+      {/* Filter & Search row */}
+      {currentUser && (
+        <div className="bg-slate-900/40 px-6 py-4 border-b border-slate-900 flex flex-wrap gap-4 items-center">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-slate-400" />
+            <input 
+              type="text" 
+              placeholder="Cari task..." 
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 w-48"
+              value={filterSearch}
+              onChange={(e) => setFilterSearch(e.target.value)}
+            />
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Assignee:</span>
+            <select 
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              value={filterAssignee}
+              onChange={(e) => setFilterAssignee(e.target.value)}
+            >
+              <option className="bg-slate-900 text-slate-200" value="">Semua</option>
+              {users.map(u => (
+                <option className="bg-slate-900 text-slate-200" key={u.id} value={u.id}>@{u.username}</option>
+              ))}
+            </select>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Komponen:</span>
+            <select 
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+              value={filterComponent}
+              onChange={(e) => setFilterComponent(e.target.value)}
+            >
+              <option className="bg-slate-900 text-slate-200" value="">Semua</option>
+              {components.map(c => (
+                <option className="bg-slate-900 text-slate-200" key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {(filterSearch || filterAssignee || filterComponent) && (
+            <button 
+              onClick={() => { setFilterSearch(''); setFilterAssignee(''); setFilterComponent(''); }}
+              className="text-xs text-indigo-400 hover:text-indigo-300 font-medium ml-auto cursor-pointer"
+            >
+              Reset Filter
+            </button>
+          )}
+        </div>
+      )}
+
       {/* 3. Main Dashboard Layout */}
       <main className="flex-1 p-6 grid grid-cols-1 xl:grid-cols-4 gap-6">
         
@@ -1087,11 +1267,45 @@ function App() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             
             {categories.map(category => {
-              const catTasks = tasks.filter(t => t.macro_status?.category === category);
+              const catTasks = filteredTasks.filter(t => t.macro_status?.category === category && !isSubTaskOfActiveParent(t));
               const { title, color } = categoryLabels[category];
+              const isCollapsed = collapsedColumns[category];
+
+              if (isCollapsed) {
+                return (
+                  <div 
+                    key={category} 
+                    className="bg-slate-900/20 border border-slate-950 w-14 rounded-2xl p-3 flex flex-col items-center gap-4 min-h-[500px] transition-all duration-300"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => handleDrop(e, category)}
+                  >
+                    <button 
+                      onClick={() => toggleCollapseColumn(category)} 
+                      className="bg-slate-950 hover:bg-slate-900 p-1 border border-slate-800 rounded-lg text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+                      title="Expand Kolom"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="bg-slate-900 text-slate-400 text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-full border border-slate-850">
+                      {catTasks.length}
+                    </span>
+                    <h2 
+                      className="text-xs font-bold text-slate-400 tracking-wider uppercase whitespace-nowrap mt-8" 
+                      style={{ writingMode: 'vertical-rl' }}
+                    >
+                      {title}
+                    </h2>
+                  </div>
+                );
+              }
 
               return (
-                <div key={category} className="bg-slate-900/30 border border-slate-900 rounded-2xl p-4 flex flex-col min-h-[500px]">
+                <div 
+                  key={category} 
+                  className="bg-slate-900/30 border border-slate-900 rounded-2xl p-4 flex flex-col min-h-[500px] transition-all duration-300"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => handleDrop(e, category)}
+                >
                   
                   {/* Category Header */}
                   <div className={`border-b-2 ${color.split(' ')[0]} pb-3 mb-4 flex items-center justify-between`}>
@@ -1099,9 +1313,18 @@ function App() {
                       <span className={`w-2 h-2 rounded-full ${category === 'Done' ? 'bg-emerald-500' : category === 'Review' ? 'bg-indigo-500' : category === 'In_Progress' ? 'bg-amber-500' : 'bg-slate-400'}`} />
                       <span>{title}</span>
                     </h2>
-                    <span className="bg-slate-900 text-slate-400 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-slate-800">
-                      {catTasks.length}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="bg-slate-900 text-slate-400 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-slate-800">
+                        {catTasks.length}
+                      </span>
+                      <button 
+                        onClick={() => toggleCollapseColumn(category)} 
+                        className="bg-slate-950 hover:bg-slate-900 p-1 border border-slate-850 rounded-lg text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
+                        title="Collapse Kolom"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Task Cards Container */}
@@ -1116,6 +1339,9 @@ function App() {
                           key={task.id} 
                           className="bg-slate-900 border border-slate-800/80 hover:border-slate-700/80 rounded-xl p-4 shadow-lg hover:shadow-xl transition-all cursor-pointer group relative"
                           onClick={() => loadAuditTrail(task)}
+                          onDoubleClick={() => openTaskEditor(task)}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, task)}
                         >
                           {/* Card Header */}
                           <div className="flex justify-between items-start gap-2 mb-2">
@@ -1160,7 +1386,6 @@ function App() {
                             <p className="text-[9px] uppercase tracking-wider font-bold text-slate-500">Komponen Teknis:</p>
                             
                             {task.component_statuses.map(cs => {
-                              // Developers list
                               const devUsers = users.filter(u => u.permissions?.includes('update_component_status') || u.role === 'Developer');
                               
                               return (
@@ -1170,16 +1395,15 @@ function App() {
                                       🔧 {cs.component?.name}
                                     </span>
                                     
-                                    {/* Component status badge / Selector if developer is active */}
                                     {(hasPermission('manage_tasks') || (hasPermission('update_component_status') && (cs.assignee_id === currentUser.id || !cs.assignee_id))) ? (
                                       <select 
                                         className="bg-slate-900 border border-slate-800 text-[9px] font-semibold text-indigo-400 rounded px-1.5 py-0.5 focus:outline-none focus:border-indigo-500 cursor-pointer"
                                         value={cs.status_id}
                                         onChange={(e) => handleUpdateComponentStatus(task.id, cs.component_id, parseInt(e.target.value))}
-                                        onClick={(e) => e.stopPropagation()} // Stop opening audit logs panel
+                                        onClick={(e) => e.stopPropagation()}
                                       >
                                         {statuses.map(s => (
-                                          <option key={s.id} value={s.id}>{s.name}</option>
+                                          <option className="bg-slate-900 text-slate-200" key={s.id} value={s.id}>{s.name}</option>
                                         ))}
                                       </select>
                                     ) : (
@@ -1194,7 +1418,6 @@ function App() {
                                     )}
                                   </div>
 
-                                  {/* Assignee display and change option for PM */}
                                   <div className="flex items-center justify-between gap-1.5 text-[9px]">
                                     <div className="flex items-center gap-1 text-slate-400 font-mono">
                                       <UserIcon className="w-2.5 h-2.5 text-slate-500" />
@@ -1205,9 +1428,9 @@ function App() {
                                           onChange={(e) => handleAssignDeveloper(task.id, cs.component_id, e.target.value ? parseInt(e.target.value) : null)}
                                           onClick={(e) => e.stopPropagation()}
                                         >
-                                          <option value="">Belum Ditugaskan</option>
+                                          <option className="bg-slate-900 text-slate-200" value="">Belum Ditugaskan</option>
                                           {devUsers.map(u => (
-                                            <option key={u.id} value={u.id}>@{u.username}</option>
+                                            <option className="bg-slate-900 text-slate-200" key={u.id} value={u.id}>@{u.username}</option>
                                           ))}
                                         </select>
                                       ) : (
@@ -1215,7 +1438,6 @@ function App() {
                                       )}
                                     </div>
 
-                                    {/* Estimated Hours */}
                                     {cs.estimated_hours > 0 && (
                                       <span className="text-slate-500 font-mono flex items-center gap-0.5">
                                         <Clock className="w-2 h-2" />
@@ -1228,57 +1450,97 @@ function App() {
                             })}
                           </div>
 
-                          {/* Footer Card: Macro Actions (Done/Reject for QA and Override for PM) */}
-                          <div className="mt-3.5 pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                            {/* Macro Status Badge */}
-                            <span className="text-[10px] text-slate-400 font-bold bg-slate-900 border border-slate-800/60 rounded px-2 py-0.5">
-                              Makro: <span className="text-slate-200">{task.macro_status?.name}</span>
-                            </span>
+                          {/* Nested Sub-tasks (Dependents) if parent is In Progress */}
+                          {task.macro_status?.category === 'In_Progress' && (
+                            (() => {
+                              const subTasks = getSubTasksForParent(task);
+                              if (subTasks.length === 0) return null;
+                              return (
+                                <div className="mt-3 pt-3 border-t border-slate-800/80 space-y-2">
+                                  <p className="text-[9px] uppercase tracking-wider font-bold text-indigo-400">Sub-Task Dependensi ({subTasks.length}):</p>
+                                  <div className="space-y-1.5 pl-2 border-l border-indigo-500/30">
+                                    {subTasks.map(sub => (
+                                      <div 
+                                        key={sub.id} 
+                                        className="bg-slate-950/40 p-2 rounded border border-slate-850 hover:border-slate-800 transition-colors cursor-pointer"
+                                        onClick={(e) => { e.stopPropagation(); loadAuditTrail(sub); }}
+                                        onDoubleClick={(e) => { e.stopPropagation(); openTaskEditor(sub); }}
+                                      >
+                                        <div className="flex justify-between items-start gap-1">
+                                          <span className="text-[10px] font-bold text-slate-300 line-clamp-1">
+                                            #{sub.id} - {sub.title}
+                                          </span>
+                                          <span className="text-[8px] bg-slate-900 text-slate-400 px-1 rounded border border-slate-800 font-mono shrink-0">
+                                            {sub.macro_status?.name}
+                                          </span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                          {sub.component_statuses.map(cs => (
+                                            <span 
+                                              key={cs.id} 
+                                              className="text-[7px] bg-slate-900 text-slate-400 px-1 py-0.5 rounded border border-slate-850"
+                                              title={`${cs.component?.name}: ${cs.status?.name}`}
+                                            >
+                                              {cs.component?.name[0]}: {cs.status?.name}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })()
+                          )}
 
-                            {/* QA Quality Gate Controls */}
-                            {hasPermission('qa_gate') && (
-                              <div className="flex items-center gap-1.5">
-                                {/* Done Button: If currently in Testing/Review category */}
-                                {task.macro_status?.category !== 'Done' && (
+                          {/* Footer Card: Macro Actions */}
+                          <div className="mt-3.5 pt-3 border-t border-slate-800/80 flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-slate-400 font-bold bg-slate-900 border border-slate-800/60 rounded px-2 py-0.5">
+                                Makro: <span className="text-slate-200">{task.macro_status?.name}</span>
+                              </span>
+
+                              {hasPermission('qa_gate') && (
+                                <div className="flex items-center gap-1.5">
+                                  {task.macro_status?.category !== 'Done' && (
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const doneStatus = statuses.find(s => s.name === 'Done');
+                                        if (doneStatus) handleQAOverrideMacro(task.id, doneStatus.id);
+                                      }}
+                                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold px-2 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+                                    >
+                                      <Check className="w-2.5 h-2.5" />
+                                      <span>Approve</span>
+                                    </button>
+                                  )}
+
                                   <button 
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      const doneStatus = statuses.find(s => s.name === 'Done');
-                                      if (doneStatus) handleQAOverrideMacro(task.id, doneStatus.id);
+                                      setSelectedTaskForReject(task);
+                                      setShowRejectModal(true);
                                     }}
-                                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold px-2 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+                                    className="bg-red-950/40 hover:bg-red-900/30 text-red-400 text-[9px] font-bold px-2 py-1 border border-red-500/20 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
                                   >
-                                    <Check className="w-2.5 h-2.5" />
-                                    <span>Approve</span>
+                                    <AlertOctagon className="w-2.5 h-2.5" />
+                                    <span>Reject</span>
                                   </button>
-                                )}
+                                </div>
+                              )}
+                            </div>
 
-                                {/* Reject Button */}
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedTaskForReject(task);
-                                    setShowRejectModal(true);
-                                  }}
-                                  className="bg-red-950/40 hover:bg-red-900/30 text-red-400 text-[9px] font-bold px-2 py-1 border border-red-500/20 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
-                                >
-                                  <AlertOctagon className="w-2.5 h-2.5" />
-                                  <span>Reject</span>
-                                </button>
-                              </div>
-                            )}
-
-                            {/* PM Override Controls */}
                             {hasPermission('manage_tasks') && (
                               <select 
-                                className="bg-slate-950 border border-slate-800 text-[9px] font-semibold text-purple-400 rounded px-1.5 py-0.5 focus:outline-none cursor-pointer"
+                                className="w-full bg-slate-950 border border-slate-800 text-[9px] font-semibold text-purple-400 rounded px-1.5 py-1 focus:outline-none cursor-pointer"
                                 value={task.macro_status_id}
                                 onChange={(e) => handleQAOverrideMacro(task.id, parseInt(e.target.value))}
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                <option disabled>Override Status Makro</option>
+                                <option className="bg-slate-900 text-slate-200" disabled>Override Status Makro</option>
                                 {statuses.map(s => (
-                                  <option key={s.id} value={s.id}>{s.name} (PM Override)</option>
+                                  <option className="bg-slate-900 text-slate-200" key={s.id} value={s.id}>{s.name} (PM Override)</option>
                                 ))}
                               </select>
                             )}
@@ -1557,6 +1819,91 @@ function App() {
                   className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-xl shadow-lg cursor-pointer"
                 >
                   Simpan Task
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Task Modal */}
+      {showEditTask && selectedTaskForEdit && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex justify-center items-center p-4">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-lg p-6 rounded-2xl shadow-2xl space-y-5 animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+              <h2 className="text-base font-bold text-slate-100">Edit Detail Tiket Task #{selectedTaskForEdit.id}</h2>
+              <button onClick={() => { setShowEditTask(false); setSelectedTaskForEdit(null); }} className="text-slate-400 hover:text-slate-200 text-lg cursor-pointer">&times;</button>
+            </div>
+
+            <form onSubmit={handleUpdateTask} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-2">Judul Task</label>
+                <input 
+                  type="text" 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 px-3 text-slate-200 focus:outline-none focus:border-indigo-500"
+                  value={editTaskTitle}
+                  onChange={(e) => setEditTaskTitle(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-2">Deskripsi Detail</label>
+                <textarea 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 px-3 text-slate-200 focus:outline-none focus:border-indigo-500 min-h-[80px]"
+                  value={editTaskDesc}
+                  onChange={(e) => setEditTaskDesc(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-2">Tenggat Waktu</label>
+                <input 
+                  type="date" 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 px-3 text-slate-200 focus:outline-none focus:border-indigo-500"
+                  value={editTaskDueDate}
+                  onChange={(e) => setEditTaskDueDate(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-slate-300 font-semibold">Ketergantungan Task (Dependensi)</label>
+                {tasks.filter(t => t.id !== selectedTaskForEdit.id).length === 0 ? (
+                  <p className="text-slate-500 italic text-[11px]">Belum ada task lain di proyek ini yang dapat dijadikan dependensi.</p>
+                ) : (
+                  <div className="max-h-[120px] overflow-y-auto space-y-1.5 border border-slate-800 p-2.5 rounded-lg bg-slate-950/40">
+                    {tasks.filter(t => t.id !== selectedTaskForEdit.id).map(t => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => toggleEditTaskDependencySelection(t.id)}
+                        className={`w-full py-1.5 px-3 rounded-md border text-left flex items-center justify-between transition-colors cursor-pointer text-[11px] ${
+                          editTaskDependencies.includes(t.id)
+                            ? 'bg-indigo-600/10 border-indigo-500 text-indigo-400'
+                            : 'bg-slate-900/50 border-slate-800 text-slate-400 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="truncate">#{t.id} - {t.title}</span>
+                        {editTaskDependencies.includes(t.id) && <Check className="w-3.5 h-3.5 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => { setShowEditTask(false); setSelectedTaskForEdit(null); }}
+                  className="bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-300 font-semibold py-2 px-4 rounded-xl cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button 
+                  type="submit"
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-4 rounded-xl cursor-pointer"
+                >
+                  Simpan Perubahan
                 </button>
               </div>
             </form>
@@ -1912,7 +2259,6 @@ function App() {
                     setNewGroupId(e.target.value);
                     setNewRole(getSelectedGroupName(e.target.value));
                   }}
-                  required
                 >
                   <option value="">Pilih group...</option>
                   {groups.map(group => (
@@ -1995,7 +2341,6 @@ function App() {
                     setNewGroupId(e.target.value);
                     setNewRole(getSelectedGroupName(e.target.value));
                   }}
-                  required
                   disabled={selectedUserForEdit.id === currentUser.id}
                 >
                   <option value="">Pilih group...</option>
@@ -2228,7 +2573,9 @@ function App() {
                       </td>
                       <td className="py-3 px-4 text-right space-x-2">
                         <button onClick={() => openGroupEditor(group)} className="bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold py-1 px-2.5 rounded-lg border border-slate-800 cursor-pointer">Edit</button>
-                        <button onClick={() => handleDeleteGroup(group.id)} className="bg-red-950/20 hover:bg-red-900/20 text-red-400 font-bold py-1 px-2.5 border border-red-500/20 rounded-lg cursor-pointer">Hapus</button>
+                        {!group.is_system && (
+                          <button onClick={() => handleDeleteGroup(group.id)} className="bg-red-950/20 hover:bg-red-900/20 text-red-400 font-bold py-1 px-2.5 border border-red-500/20 rounded-lg cursor-pointer">Hapus</button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -2249,7 +2596,13 @@ function App() {
             <form onSubmit={handleSaveGroup} className="space-y-4 text-xs">
               <div>
                 <label className="block text-slate-300 font-semibold mb-2">Nama Group</label>
-                <input className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 px-3 text-slate-200 focus:outline-none focus:border-red-500" value={groupName} onChange={(e) => setGroupName(e.target.value)} required />
+                <input 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 px-3 text-slate-200 focus:outline-none focus:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed" 
+                  value={groupName} 
+                  onChange={(e) => setGroupName(e.target.value)} 
+                  required 
+                  disabled={selectedGroupForEdit?.is_system} 
+                />
               </div>
               <div>
                 <label className="block text-slate-300 font-semibold mb-2">Deskripsi</label>

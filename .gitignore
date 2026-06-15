@@ -15,3 +15,5 @@ Thumbs.db
 
 # Docker
 get-docker.sh
+ecosystem.config.js
+frontend/package-lock.json

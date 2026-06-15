@@ -87,12 +87,18 @@ async def update_group(
             detail="Group tidak ditemukan"
         )
 
-    if group_in.name is not None:
-        group.name = group_in.name
-    if group_in.description is not None:
-        group.description = group_in.description
-    if group_in.permissions is not None:
-        group.permissions = validate_permissions(group_in.permissions)
+    update_data = group_in.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        if group.is_system and update_data["name"] != group.name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nama group sistem tidak dapat diubah"
+            )
+        group.name = update_data["name"]
+    if "description" in update_data:
+        group.description = update_data["description"]
+    if "permissions" in update_data:
+        group.permissions = validate_permissions(update_data["permissions"])
 
     try:
         await db.flush()
@@ -116,6 +122,12 @@ async def delete_group(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Group tidak ditemukan"
+        )
+
+    if group.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Group sistem tidak dapat dihapus"
         )
 
     count_stmt = select(func.count()).select_from(User).where(User.group_id == group_id)

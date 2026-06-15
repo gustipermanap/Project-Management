@@ -93,21 +93,49 @@ async def update_user(
         )
 
     # Update fields
-    if user_in.username is not None:
-        user.username = user_in.username
-    if user_in.email is not None:
-        user.email = user_in.email
-    if user_in.role is not None or user_in.group_id is not None:
+    update_data = user_in.model_dump(exclude_unset=True)
+    if "username" in update_data:
+        user.username = update_data["username"]
+    if "email" in update_data:
+        user.email = update_data["email"]
+    if "role" in update_data or "group_id" in update_data:
         if not can_manage_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Hanya user dengan permission manage_users yang dapat mengubah group/peran pengguna"
             )
-        group = await resolve_user_group(db, user_in.group_id, user_in.role)
-        user.role = group.name if group else user_in.role
-        user.group_id = group.id if group else None
-    if user_in.password is not None:
-        user.password_hash = get_password_hash(user_in.password)
+        if "group_id" in update_data:
+            group_id = update_data["group_id"]
+            if group_id is not None:
+                group = await db.get(UserGroup, group_id)
+                if not group:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Group user tidak ditemukan"
+                    )
+                user.group = group
+                user.group_id = group.id
+                user.role = group.name
+            else:
+                user.group = None
+                user.group_id = None
+                if "role" in update_data:
+                    user.role = update_data["role"]
+        elif "role" in update_data:
+            role = update_data["role"]
+            stmt = select(UserGroup).where(UserGroup.name == role)
+            res = await db.execute(stmt)
+            group = res.scalar_one_or_none()
+            if group:
+                user.group = group
+                user.group_id = group.id
+                user.role = group.name
+            else:
+                user.group = None
+                user.group_id = None
+                user.role = role
+    if "password" in update_data:
+        user.password_hash = get_password_hash(update_data["password"])
 
     await db.flush()
     await db.refresh(user, attribute_names=["group"])

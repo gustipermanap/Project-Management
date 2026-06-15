@@ -497,3 +497,104 @@ async def assign_component_developer(
     )
     res_reload = await db.execute(stmt_reload)
     return res_reload.scalar_one()
+
+@router.put("/{task_id}", response_model=TaskRead)
+async def update_task(
+    task_id: int,
+    task_in: TaskUpdate,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(require_manage_tasks)]
+) -> Any:
+    """PM mengupdate detail task (title, description, due_date, dependencies)."""
+    stmt = (
+        select(Task)
+        .where(Task.id == task_id)
+        .options(
+            selectinload(Task.macro_status),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
+        )
+    )
+    res = await db.execute(stmt)
+    task = res.scalar_one_or_none()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task tidak ditemukan"
+        )
+
+    old_values = []
+    new_values = []
+    
+    if task_in.title is not None and task_in.title != task.title:
+        old_values.append(f"Title: '{task.title}'")
+        task.title = task_in.title
+        new_values.append(f"Title: '{task_in.title}'")
+        
+    if task_in.description is not None and task_in.description != task.description:
+        old_values.append(f"Desc: '{task.description}'")
+        task.description = task_in.description
+        new_values.append(f"Desc: '{task_in.description}'")
+
+    if task_in.due_date is not None and task_in.due_date != task.due_date:
+        old_values.append(f"Due Date: {task.due_date}")
+        task.due_date = task_in.due_date
+        new_values.append(f"Due Date: {task_in.due_date}")
+
+    if task_in.macro_status_id is not None and task_in.macro_status_id != task.macro_status_id:
+        macro_status = await db.get(Status, task_in.macro_status_id)
+        if not macro_status:
+            raise HTTPException(status_code=404, detail="Status makro tidak ditemukan")
+        old_values.append(f"Macro Status: {task.macro_status.name if task.macro_status else task.macro_status_id}")
+        task.macro_status_id = task_in.macro_status_id
+        new_values.append(f"Macro Status: {macro_status.name}")
+
+    if task_in.dependencies is not None:
+        task.dependencies.clear()
+        for dep_id in task_in.dependencies:
+            if dep_id == task.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Task tidak dapat bergantung pada dirinya sendiri."
+                )
+            dep_task = await db.get(Task, dep_id)
+            if not dep_task:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Task dependensi dengan ID {dep_id} tidak ditemukan"
+                )
+            if dep_task.project_id != task.project_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Task dependensi dengan ID {dep_id} harus berada pada proyek yang sama"
+                )
+            task.dependencies.append(dep_task)
+        old_values.append("Dependencies updated")
+        new_values.append(f"Dependencies: {task_in.dependencies}")
+
+    await db.flush()
+
+    if old_values:
+        await create_audit_log(
+            db=db,
+            task_id=task.id,
+            changed_by=current_user.username,
+            old_value=", ".join(old_values),
+            new_value=", ".join(new_values)
+        )
+
+    stmt_reload = (
+        select(Task)
+        .where(Task.id == task.id)
+        .options(
+            selectinload(Task.macro_status),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
+            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+            selectinload(Task.dependencies),
+        )
+    )
+    res_reload = await db.execute(stmt_reload)
+    return res_reload.scalar_one()
