@@ -179,6 +179,62 @@ class AggregationRuleRead(AggregationRuleBase):
 
 
 # ==========================================
+# 6.5 CLICKUP FEATURES SCHEMAS
+# ==========================================
+class TaskCommentCreate(BaseModel):
+    content: str = Field(..., min_length=1)
+
+class TaskCommentRead(BaseModel):
+    id: int
+    task_id: int
+    user_id: int
+    content: str
+    created_at: datetime
+    user: Optional[UserRead] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskChecklistCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+
+class TaskChecklistUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    is_completed: Optional[bool] = None
+
+class TaskChecklistRead(BaseModel):
+    id: int
+    task_id: int
+    name: str
+    is_completed: bool
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TimeLogCreate(BaseModel):
+    description: Optional[str] = None
+    start_time: Optional[datetime] = None
+
+class TimeLogManual(BaseModel):
+    start_time: datetime
+    end_time: datetime
+    description: Optional[str] = None
+
+class TimeLogStop(BaseModel):
+    description: Optional[str] = None
+
+class TimeLogRead(BaseModel):
+    id: int
+    task_component_status_id: int
+    user_id: int
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    description: Optional[str] = None
+    user: Optional[UserRead] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==========================================
 # 7. TASK COMPONENT STATUS SCHEMAS
 # ==========================================
 class TaskComponentStatusBase(BaseModel):
@@ -201,6 +257,7 @@ class TaskComponentStatusRead(TaskComponentStatusBase):
     component: Optional[ComponentRead] = None
     status: Optional[StatusRead] = None
     assignee: Optional[UserRead] = None
+    time_logs: List[TimeLogRead] = []
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -254,6 +311,8 @@ class TaskRead(TaskBase):
     macro_status: Optional[StatusRead] = None
     component_statuses: List[TaskComponentStatusRead] = []
     dependencies: List[TaskDependencyRead] = []
+    comments: List[TaskCommentRead] = []
+    checklists: List[TaskChecklistRead] = []
     model_config = ConfigDict(from_attributes=True)
 
 

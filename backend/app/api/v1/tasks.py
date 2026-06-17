@@ -1,17 +1,35 @@
 from typing import Annotated, List, Optional, Any
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from app.core.db import get_async_session
 from app.crud.crud import crud_task, crud_project, crud_status, crud_component, crud_task_component_status, crud_user
-from app.models.models import User, Project, Task, TaskComponentStatus, Status, Component, AuditTrail
+from app.models.models import (
+    User, Project, Task, TaskComponentStatus, Status, Component, AuditTrail,
+    TaskComment, TaskChecklist, TimeLog
+)
 from app.schemas.schemas import (
     TaskCreate, TaskUpdate, TaskRead, TaskComponentStatusRead,
-    ComponentStatusUpdatePayload, MacroStatusUpdatePayload, RejectBugPayload, AuditTrailRead
+    ComponentStatusUpdatePayload, MacroStatusUpdatePayload, RejectBugPayload, AuditTrailRead,
+    TaskCommentCreate, TaskCommentRead, TaskChecklistCreate, TaskChecklistRead, TaskChecklistUpdate,
+    TimeLogCreate, TimeLogRead, TimeLogStop, TimeLogManual
 )
 from app.core.security import get_current_user, PermissionChecker, user_has_permission
 from app.services.engine import evaluate_task_rules, create_audit_log
+
+def get_task_select_options():
+    return [
+        selectinload(Task.macro_status),
+        selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
+        selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
+        selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
+        selectinload(Task.component_statuses).selectinload(TaskComponentStatus.time_logs).selectinload(TimeLog.user).selectinload(User.group),
+        selectinload(Task.dependencies),
+        selectinload(Task.comments).selectinload(TaskComment.user).selectinload(User.group),
+        selectinload(Task.checklists)
+    ]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -30,13 +48,7 @@ async def get_tasks(
     """Mengambil daftar task, opsional difilter berdasarkan project_id."""
     stmt = (
         select(Task)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     if project_id:
         stmt = stmt.where(Task.project_id == project_id)
@@ -54,13 +66,7 @@ async def get_task(
     stmt = (
         select(Task)
         .where(Task.id == task_id)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     res = await db.execute(stmt)
     task = res.scalar_one_or_none()
@@ -168,13 +174,7 @@ async def create_task(
     stmt = (
         select(Task)
         .where(Task.id == task.id)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     res = await db.execute(stmt)
     return res.scalar_one()
@@ -317,13 +317,7 @@ async def update_macro_status(
     stmt_reload = (
         select(Task)
         .where(Task.id == task_id)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     res_reload = await db.execute(stmt_reload)
     return res_reload.scalar_one()
@@ -403,13 +397,7 @@ async def reject_task_by_qa(
     stmt_reload = (
         select(Task)
         .where(Task.id == task_id)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     res_reload = await db.execute(stmt_reload)
     return res_reload.scalar_one()
@@ -588,13 +576,309 @@ async def update_task(
     stmt_reload = (
         select(Task)
         .where(Task.id == task.id)
-        .options(
-            selectinload(Task.macro_status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.component),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.status),
-            selectinload(Task.component_statuses).selectinload(TaskComponentStatus.assignee).selectinload(User.group),
-            selectinload(Task.dependencies),
-        )
+        .options(*get_task_select_options())
     )
     res_reload = await db.execute(stmt_reload)
     return res_reload.scalar_one()
+
+
+# ==========================================
+# 11. CLICKUP FEATURES: COMMENTS ENDPOINTS
+# ==========================================
+@router.post("/{task_id}/comments", response_model=TaskCommentRead, status_code=status.HTTP_201_CREATED)
+async def create_task_comment(
+    task_id: int,
+    payload: TaskCommentCreate,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task tidak ditemukan")
+    
+    comment = TaskComment(
+        task_id=task_id,
+        user_id=current_user.id,
+        content=payload.content
+    )
+    db.add(comment)
+    await db.flush()
+    
+    stmt = select(TaskComment).where(TaskComment.id == comment.id).options(
+        selectinload(TaskComment.user).selectinload(User.group)
+    )
+    res = await db.execute(stmt)
+    return res.scalar_one()
+
+@router.get("/{task_id}/comments", response_model=List[TaskCommentRead])
+async def get_task_comments(
+    task_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt = (
+        select(TaskComment)
+        .where(TaskComment.task_id == task_id)
+        .options(selectinload(TaskComment.user).selectinload(User.group))
+        .order_by(TaskComment.created_at.asc())
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.delete("/{task_id}/comments/{comment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task_comment(
+    task_id: int,
+    comment_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> None:
+    comment = await db.get(TaskComment, comment_id)
+    if not comment or comment.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Komentar tidak ditemukan")
+    
+    if comment.user_id != current_user.id and not user_has_permission(current_user, "manage_tasks"):
+        raise HTTPException(status_code=403, detail="Tidak memiliki akses untuk menghapus komentar ini")
+    
+    await db.delete(comment)
+    await db.commit()
+
+
+# ==========================================
+# 12. CLICKUP FEATURES: CHECKLIST ENDPOINTS
+# ==========================================
+@router.post("/{task_id}/checklists", response_model=TaskChecklistRead, status_code=status.HTTP_201_CREATED)
+async def create_task_checklist(
+    task_id: int,
+    payload: TaskChecklistCreate,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task tidak ditemukan")
+    
+    checklist = TaskChecklist(
+        task_id=task_id,
+        name=payload.name,
+        is_completed=False
+    )
+    db.add(checklist)
+    await db.flush()
+    return checklist
+
+@router.get("/{task_id}/checklists", response_model=List[TaskChecklistRead])
+async def get_task_checklists(
+    task_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt = (
+        select(TaskChecklist)
+        .where(TaskChecklist.task_id == task_id)
+        .order_by(TaskChecklist.created_at.asc())
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.put("/{task_id}/checklists/{checklist_id}", response_model=TaskChecklistRead)
+async def update_task_checklist(
+    task_id: int,
+    checklist_id: int,
+    payload: TaskChecklistUpdate,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    checklist = await db.get(TaskChecklist, checklist_id)
+    if not checklist or checklist.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Checklist item tidak ditemukan")
+    
+    if payload.name is not None:
+        checklist.name = payload.name
+    if payload.is_completed is not None:
+        checklist.is_completed = payload.is_completed
+        
+    await db.flush()
+    return checklist
+
+@router.delete("/{task_id}/checklists/{checklist_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task_checklist(
+    task_id: int,
+    checklist_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> None:
+    checklist = await db.get(TaskChecklist, checklist_id)
+    if not checklist or checklist.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Checklist item tidak ditemukan")
+    
+    await db.delete(checklist)
+    await db.commit()
+
+
+# ==========================================
+# 13. CLICKUP FEATURES: TIME TRACKING ENDPOINTS
+# ==========================================
+@router.post("/{task_id}/components/{component_id}/time-logs/start", response_model=TimeLogRead)
+async def start_time_log(
+    task_id: int,
+    component_id: int,
+    payload: TimeLogCreate,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt_tc = select(TaskComponentStatus).where(
+        (TaskComponentStatus.task_id == task_id) & (TaskComponentStatus.component_id == component_id)
+    )
+    res_tc = await db.execute(stmt_tc)
+    tc_status = res_tc.scalar_one_or_none()
+    if not tc_status:
+        raise HTTPException(status_code=404, detail="Komponen pengerjaan tidak ditemukan untuk task ini")
+    
+    stmt_active = select(TimeLog).where(
+        (TimeLog.task_component_status_id == tc_status.id) &
+        (TimeLog.user_id == current_user.id) &
+        (TimeLog.end_time == None)
+    )
+    res_active = await db.execute(stmt_active)
+    active_log = res_active.scalar_one_or_none()
+    if active_log:
+        return active_log
+    
+    start_time = payload.start_time or datetime.now()
+    log = TimeLog(
+        task_component_status_id=tc_status.id,
+        user_id=current_user.id,
+        start_time=start_time,
+        description=payload.description
+    )
+    db.add(log)
+    await db.flush()
+    
+    stmt_reload = select(TimeLog).where(TimeLog.id == log.id).options(
+        selectinload(TimeLog.user).selectinload(User.group)
+    )
+    res_reload = await db.execute(stmt_reload)
+    return res_reload.scalar_one()
+
+@router.post("/{task_id}/components/{component_id}/time-logs/stop", response_model=TimeLogRead)
+async def stop_time_log(
+    task_id: int,
+    component_id: int,
+    payload: TimeLogStop,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt_tc = select(TaskComponentStatus).where(
+        (TaskComponentStatus.task_id == task_id) & (TaskComponentStatus.component_id == component_id)
+    )
+    res_tc = await db.execute(stmt_tc)
+    tc_status = res_tc.scalar_one_or_none()
+    if not tc_status:
+        raise HTTPException(status_code=404, detail="Komponen pengerjaan tidak ditemukan untuk task ini")
+    
+    stmt_active = select(TimeLog).where(
+        (TimeLog.task_component_status_id == tc_status.id) &
+        (TimeLog.user_id == current_user.id) &
+        (TimeLog.end_time == None)
+    )
+    res_active = await db.execute(stmt_active)
+    active_log = res_active.scalar_one_or_none()
+    if not active_log:
+        raise HTTPException(status_code=400, detail="Tidak ada tracker waktu yang sedang berjalan untuk Anda")
+    
+    end_time = datetime.now()
+    active_log.end_time = end_time
+    diff = end_time - active_log.start_time
+    active_log.duration_seconds = int(diff.total_seconds())
+    if payload.description:
+        active_log.description = payload.description
+        
+    await db.flush()
+    
+    stmt_reload = select(TimeLog).where(TimeLog.id == active_log.id).options(
+        selectinload(TimeLog.user).selectinload(User.group)
+    )
+    res_reload = await db.execute(stmt_reload)
+    return res_reload.scalar_one()
+
+@router.post("/{task_id}/components/{component_id}/time-logs/manual", response_model=TimeLogRead)
+async def manual_time_log(
+    task_id: int,
+    component_id: int,
+    payload: TimeLogManual,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt_tc = select(TaskComponentStatus).where(
+        (TaskComponentStatus.task_id == task_id) & (TaskComponentStatus.component_id == component_id)
+    )
+    res_tc = await db.execute(stmt_tc)
+    tc_status = res_tc.scalar_one_or_none()
+    if not tc_status:
+        raise HTTPException(status_code=404, detail="Komponen pengerjaan tidak ditemukan untuk task ini")
+    
+    diff = payload.end_time - payload.start_time
+    if diff.total_seconds() < 0:
+        raise HTTPException(status_code=400, detail="Waktu selesai tidak boleh sebelum waktu mulai")
+        
+    log = TimeLog(
+        task_component_status_id=tc_status.id,
+        user_id=current_user.id,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        duration_seconds=int(diff.total_seconds()),
+        description=payload.description
+    )
+    db.add(log)
+    await db.flush()
+    
+    stmt_reload = select(TimeLog).where(TimeLog.id == log.id).options(
+        selectinload(TimeLog.user).selectinload(User.group)
+    )
+    res_reload = await db.execute(stmt_reload)
+    return res_reload.scalar_one()
+
+@router.get("/{task_id}/components/{component_id}/time-logs", response_model=List[TimeLogRead])
+async def get_component_time_logs(
+    task_id: int,
+    component_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt_tc = select(TaskComponentStatus).where(
+        (TaskComponentStatus.task_id == task_id) & (TaskComponentStatus.component_id == component_id)
+    )
+    res_tc = await db.execute(stmt_tc)
+    tc_status = res_tc.scalar_one_or_none()
+    if not tc_status:
+        return []
+        
+    stmt = (
+        select(TimeLog)
+        .where(TimeLog.task_component_status_id == tc_status.id)
+        .options(selectinload(TimeLog.user).selectinload(User.group))
+        .order_by(TimeLog.start_time.desc())
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()
+
+@router.get("/{task_id}/time-logs", response_model=List[TimeLogRead])
+async def get_task_time_logs(
+    task_id: int,
+    db: Annotated[AsyncSession, Depends(get_async_session)],
+    current_user: Annotated[User, Depends(get_current_user)]
+) -> Any:
+    stmt_tc = select(TaskComponentStatus.id).where(TaskComponentStatus.task_id == task_id)
+    res_tc = await db.execute(stmt_tc)
+    tc_status_ids = res_tc.scalars().all()
+    if not tc_status_ids:
+        return []
+        
+    stmt = (
+        select(TimeLog)
+        .where(TimeLog.task_component_status_id.in_(tc_status_ids))
+        .options(selectinload(TimeLog.user).selectinload(User.group))
+        .order_by(TimeLog.start_time.desc())
+    )
+    res = await db.execute(stmt)
+    return res.scalars().all()

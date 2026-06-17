@@ -4,7 +4,11 @@ from sqlalchemy import func
 from sqlalchemy.future import select
 from app.core.db import engine, Base, async_session_maker
 from app.core.permissions import DEFAULT_GROUPS
-from app.models.models import User, UserGroup, Status, Project, Component, AggregationRule, RuleCondition
+from datetime import date, datetime, timedelta
+from app.models.models import (
+    User, UserGroup, Status, Project, Component, AggregationRule, RuleCondition,
+    Task, TaskComponentStatus, TaskComment, TaskChecklist, TimeLog, task_dependency_association
+)
 from app.core.security import get_password_hash
 
 
@@ -150,6 +154,122 @@ async def seed_project_components_and_rules(session, status_map: dict[str, int])
             expected_status_id=status_map["Testing"],
         )
     )
+    await session.flush()
+
+    # Seed Tasks
+    backlog_status_id = status_map["Backlog"]
+    in_progress_status_id = status_map["In Progress"]
+
+    pm_user = (await session.execute(select(User).where(User.username == "pm"))).scalar_one()
+    dev1_user = (await session.execute(select(User).where(User.username == "developer1"))).scalar_one()
+    dev2_user = (await session.execute(select(User).where(User.username == "developer2"))).scalar_one()
+
+    tasks_count = (await session.execute(select(func.count()).select_from(Task))).scalar_one()
+    if tasks_count == 0:
+        # Task 1: Auth & Login Module
+        task1 = Task(
+            title="Implementasi Auth & Login Module",
+            description="Buat sistem autentikasi pengguna dengan JWT dan validasi RBAC.",
+            macro_status_id=in_progress_status_id,
+            project_id=project.id,
+        )
+        session.add(task1)
+        await session.flush()
+
+        # Task 2: Payment Gateway Integration (Depends on Auth)
+        task2 = Task(
+            title="Integrasi Payment Gateway",
+            description="Sambungkan API Midtrans untuk metode pembayaran E-Wallet dan Virtual Account.",
+            macro_status_id=backlog_status_id,
+            project_id=project.id,
+        )
+        session.add(task2)
+        await session.flush()
+
+        await session.execute(
+            task_dependency_association.insert().values(
+                task_id=task2.id,
+                dependency_id=task1.id
+            )
+        )
+
+        t1_fe = TaskComponentStatus(
+            task_id=task1.id,
+            component_id=component_map["Frontend"].id,
+            status_id=status_map["UI Ready"],
+            assignee_id=dev1_user.id,
+            estimated_hours=8.0
+        )
+        t1_be = TaskComponentStatus(
+            task_id=task1.id,
+            component_id=component_map["Backend"].id,
+            status_id=status_map["In Progress"],
+            assignee_id=dev2_user.id,
+            estimated_hours=12.0
+        )
+        session.add_all([t1_fe, t1_be])
+        await session.flush()
+
+        t2_fe = TaskComponentStatus(
+            task_id=task2.id,
+            component_id=component_map["Frontend"].id,
+            status_id=backlog_status_id,
+            assignee_id=dev1_user.id,
+            estimated_hours=16.0
+        )
+        t2_be = TaskComponentStatus(
+            task_id=task2.id,
+            component_id=component_map["Backend"].id,
+            status_id=backlog_status_id,
+            assignee_id=dev2_user.id,
+            estimated_hours=24.0
+        )
+        session.add_all([t2_fe, t2_be])
+        await session.flush()
+
+        comment1 = TaskComment(
+            task_id=task1.id,
+            user_id=pm_user.id,
+            content="Tolong selesaikan modul backend API login hari ini agar QA bisa mulai testing."
+        )
+        comment2 = TaskComment(
+            task_id=task1.id,
+            user_id=dev2_user.id,
+            content="Siap, sedang saya integrasikan dengan router FastAPI. Backend hampir selesai."
+        )
+        session.add_all([comment1, comment2])
+
+        checklist1 = TaskChecklist(task_id=task1.id, name="Desain UI form login di Figma", is_completed=True)
+        checklist2 = TaskChecklist(task_id=task1.id, name="Slicing UI frontend ke React components", is_completed=True)
+        checklist3 = TaskChecklist(task_id=task1.id, name="Implementasi API endpoint login & register", is_completed=False)
+        checklist4 = TaskChecklist(task_id=task1.id, name="Integrasi unit testing QA", is_completed=False)
+        session.add_all([checklist1, checklist2, checklist3, checklist4])
+
+        log1 = TimeLog(
+            task_component_status_id=t1_fe.id,
+            user_id=dev1_user.id,
+            start_time=datetime.now() - timedelta(hours=4),
+            end_time=datetime.now() - timedelta(hours=2),
+            duration_seconds=7200,
+            description="Mengerjakan setup Router & redux store untuk auth"
+        )
+        log2 = TimeLog(
+            task_component_status_id=t1_fe.id,
+            user_id=dev1_user.id,
+            start_time=datetime.now() - timedelta(hours=1),
+            end_time=datetime.now() - timedelta(minutes=30),
+            duration_seconds=1800,
+            description="Slicing halaman login responsive"
+        )
+        log3 = TimeLog(
+            task_component_status_id=t1_be.id,
+            user_id=dev2_user.id,
+            start_time=datetime.now() - timedelta(minutes=45),
+            end_time=None,
+            duration_seconds=None,
+            description="Menulis query SQLAlchemy untuk schema user"
+        )
+        session.add_all([log1, log2, log3])
 
 
 async def seed_data(reset: bool = False) -> None:

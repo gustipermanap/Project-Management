@@ -117,6 +117,8 @@ class Task(Base):
     macro_status: Mapped["Status"] = relationship()
     component_statuses: Mapped[List["TaskComponentStatus"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     audit_trails: Mapped[List["AuditTrail"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    comments: Mapped[List["TaskComment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    checklists: Mapped[List["TaskChecklist"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     
     dependencies: Mapped[List["Task"]] = relationship(
         "Task",
@@ -142,6 +144,7 @@ class TaskComponentStatus(Base):
     component: Mapped["Component"] = relationship(back_populates="task_statuses")
     status: Mapped["Status"] = relationship()
     assignee: Mapped[Optional["User"]] = relationship(back_populates="component_statuses")
+    time_logs: Mapped[List["TimeLog"]] = relationship(back_populates="task_component_status", cascade="all, delete-orphan")
 
 
 class AggregationRule(Base):
@@ -181,3 +184,43 @@ class AuditTrail(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     task: Mapped["Task"] = relationship(back_populates="audit_trails")
+
+
+class TaskComment(Base):
+    __tablename__ = "task_comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    task: Mapped["Task"] = relationship(back_populates="comments")
+    user: Mapped["User"] = relationship()
+
+
+class TaskChecklist(Base):
+    __tablename__ = "task_checklists"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    task: Mapped["Task"] = relationship(back_populates="checklists")
+
+
+class TimeLog(Base):
+    __tablename__ = "time_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_component_status_id: Mapped[int] = mapped_column(ForeignKey("task_component_statuses.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    task_component_status: Mapped["TaskComponentStatus"] = relationship(back_populates="time_logs")
+    user: Mapped["User"] = relationship()
