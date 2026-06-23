@@ -22,7 +22,7 @@
       "collapsed": false,
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -66,8 +66,8 @@
       "collapsed": false,
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "id": 2,
@@ -110,8 +110,8 @@
       "collapsed": false,
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 12,
+        "w": 4,
+        "x": 8,
         "y": 0
       },
       "id": 3,
@@ -155,7 +155,7 @@
       "gridPos": {
         "h": 4,
         "w": 6,
-        "x": 18,
+        "x": 12,
         "y": 0
       },
       "id": 4,
@@ -172,7 +172,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "count(container_last_seen{container_label_com_docker_compose_service!=\"\"})",
+          "expr": "count(container_last_seen{name!=\"\"})",
           "legendFormat": "Running Containers",
           "range": true,
           "refId": "A"
@@ -181,6 +181,62 @@
       "fieldConfig": {
         "defaults": {
           "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 8,
+      "title": "http://10.6.5.82:5000/ Status",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "probe_success{instance=\"http://10.6.5.82:5000/\"}",
+          "legendFormat": "Uptime Status",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 0,
+                  "text": "DISCONNECTED"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 1,
+                  "text": "CONNECTED"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -212,8 +268,8 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_service!=\"\"}[5m])) by (container_label_com_docker_compose_service) * 100",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "sum(rate(container_cpu_usage_seconds_total{name!=\"\"}[5m])) by (name) * 100",
+          "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
         }
@@ -250,8 +306,8 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(container_memory_working_set_bytes{container_label_com_docker_compose_service!=\"\"}) by (container_label_com_docker_compose_service)",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "sum(container_memory_working_set_bytes{name!=\"\"}) by (name)",
+          "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
         }
@@ -288,8 +344,8 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(container_network_receive_bytes_total{container_label_com_docker_compose_service!=\"\"}[5m])) by (container_label_com_docker_compose_service)",
-          "legendFormat": "Rx: {{container_label_com_docker_compose_service}}",
+          "expr": "sum(rate(container_network_receive_bytes_total{name!=\"\"}[5m])) by (name)",
+          "legendFormat": "Rx: {{name}}",
           "range": true,
           "refId": "A"
         },
@@ -299,8 +355,8 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "- sum(rate(container_network_transmit_bytes_total{container_label_com_docker_compose_service!=\"\"}[5m])) by (container_label_com_docker_compose_service)",
-          "legendFormat": "Tx: {{container_label_com_docker_compose_service}}",
+          "expr": "- sum(rate(container_network_transmit_bytes_total{name!=\"\"}[5m])) by (name)",
+          "legendFormat": "Tx: {{name}}",
           "range": true,
           "refId": "B"
         }
